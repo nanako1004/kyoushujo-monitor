@@ -178,10 +178,10 @@ async function checkOnce() {
       if (targets.length > 0) {
         const list = targets.map(t => `　${t.date} ${t.time}`).join("\n");
         await botSend(CONFIG.discordTargetChannel,
-          `✅ **監視コマを受け取りました！**\n${list}\n\n空きが出たら通知します。`);
+          `✅ **監視コマを更新しました！**（以前の設定はリセット）\n${list}\n\n空きが出たら通知します。複数コマを監視したい場合は1つのメッセージにまとめて送ってください。`);
       } else {
         await botSend(CONFIG.discordTargetChannel,
-          `⚠️ コマの形式が正しくありません。\n例：\n\`\`\`\n5/19 10:10\n5/23 14:00\n\`\`\``);
+          `⚠️ コマの形式が正しくありません。\n1つのメッセージにまとめて送ってください↓\n\`\`\`\n5/19 10:10\n5/23 14:00\n5/23 15:00\n\`\`\``);
       }
       prevConfirmedMsgId = msgId;
     }
