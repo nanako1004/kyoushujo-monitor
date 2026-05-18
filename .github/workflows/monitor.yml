@@ -1,0 +1,26 @@
+name: 教習所 技能予約監視
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # 5分ごとに実行
+  workflow_dispatch:          # GitHubの画面から手動実行もできる
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: コードを取得
+        uses: actions/checkout@v4
+
+      - name: Node.js セットアップ
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 予約チェック実行
+        env:
+          SCHOOL_CD:       ${{ secrets.SCHOOL_CD }}
+          STUDENT_ID:      ${{ secrets.STUDENT_ID }}
+          PASSWORD:        ${{ secrets.PASSWORD }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: node monitor.js --once
