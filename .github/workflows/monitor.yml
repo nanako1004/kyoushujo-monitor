@@ -19,8 +19,10 @@ jobs:
 
       - name: 予約チェック実行
         env:
-          SCHOOL_CD:       ${{ secrets.SCHOOL_CD }}
-          STUDENT_ID:      ${{ secrets.STUDENT_ID }}
-          PASSWORD:        ${{ secrets.PASSWORD }}
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          SCHOOL_CD:              ${{ secrets.SCHOOL_CD }}
+          STUDENT_ID:             ${{ secrets.STUDENT_ID }}
+          PASSWORD:               ${{ secrets.PASSWORD }}
+          DISCORD_WEBHOOK:        ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_BOT_TOKEN:      ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_TARGET_CHANNEL: ${{ secrets.DISCORD_TARGET_CHANNEL }}
         run: node monitor.js --once
