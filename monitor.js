@@ -1,14 +1,15 @@
 // 認証情報は環境変数から読む（GitHub Secrets / start.bat で設定）
 const CONFIG = {
-  schoolCd:        process.env.SCHOOL_CD,
-  studentId:       process.env.STUDENT_ID,
-  password:        process.env.PASSWORD,
-  discordWebhook:  process.env.DISCORD_WEBHOOK,
-  intervalMinutes: 5,
+  schoolCd:             process.env.SCHOOL_CD,
+  studentId:            process.env.STUDENT_ID,
+  password:             process.env.PASSWORD,
+  discordWebhook:       process.env.DISCORD_WEBHOOK,
+  discordBotToken:      process.env.DISCORD_BOT_TOKEN,
+  discordTargetChannel: process.env.DISCORD_TARGET_CHANNEL,
+  intervalMinutes:      5,
 };
 
-// 必須項目チェック
-["SCHOOL_CD","STUDENT_ID","PASSWORD","DISCORD_WEBHOOK"].forEach(k => {
+["SCHOOL_CD","STUDENT_ID","PASSWORD","DISCORD_WEBHOOK","DISCORD_BOT_TOKEN","DISCORD_TARGET_CHANNEL"].forEach(k => {
   if (!process.env[k]) { console.error(`環境変数 ${k} が設定されていません`); process.exit(1); }
 });
 
@@ -16,9 +17,7 @@ const BASE      = "https://www.e-license.jp";
 const LOGIN_URL = `${BASE}/el31/pc/login`;
 const LOGIN_TOP = `${BASE}/el31/vdgAMGOVXFE-brGQYS-1OA==`;
 const UA        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0";
-
-// GitHub Actionsでは --once フラグで1回実行して終了
-const RUN_ONCE = process.argv.includes("--once");
+const RUN_ONCE  = process.argv.includes("--once");
 
 // ─── CookieJar ────────────────────────────────────────────────────────
 class CookieJar {
@@ -96,28 +95,36 @@ function parseSlots(html) {
   return slots;
 }
 
-// ─── targets.txt を読み込む ────────────────────────────────────────────
-const fs   = require("fs");
-const path = require("path");
+// ─── Discordの「予約設定」チャンネルから監視コマを読み取る ────────────
+// チャンネルの最新メッセージを読んでパースする
+// 書き方例（チャンネルに投稿するメッセージ）：
+//   5/19 10:10
+//   5/23 14:00
+//   5/23 15:00
+async function loadTargetsFromDiscord() {
+  const res = await fetch(
+    `https://discord.com/api/v10/channels/${CONFIG.discordTargetChannel}/messages?limit=5`,
+    { headers: { Authorization: `Bot ${CONFIG.discordBotToken}` } }
+  );
+  if (!res.ok) throw new Error(`Discord API エラー: ${res.status}`);
+  const messages = await res.json();
 
-function loadTargets() {
-  const file = path.join(__dirname, "targets.txt");
-  if (!fs.existsSync(file)) return [];
-  return fs.readFileSync(file, "utf8")
+  // ボット以外の一番最新のメッセージを使う
+  const msg = messages.find(m => !m.author?.bot);
+  if (!msg) return [];
+
+  return msg.content
     .split("\n")
     .map(l => l.replace(/#.*$/, "").trim())
-    .filter(l => l)
+    .filter(l => /^\d+\/\d+\s+\d+:\d+$/.test(l))
     .map(l => {
       const [datePart, time] = l.split(/\s+/);
-      if (!datePart || !time) return null;
       const [mo, d] = datePart.split("/");
-      if (!mo || !d) return null;
       return { date: `${parseInt(mo)}月${parseInt(d)}日`, time };
-    })
-    .filter(Boolean);
+    });
 }
 
-// ─── Discord 通知 ─────────────────────────────────────────────────────
+// ─── Discord 通知（Webhook経由）────────────────────────────────────────
 async function sendDiscord(message) {
   const res = await fetch(CONFIG.discordWebhook, {
     method:  "POST",
@@ -133,45 +140,34 @@ let prevNotifyKey = null;
 async function checkOnce() {
   const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
   try {
-    const html    = await loginAndGetHtml();
-    const slots   = parseSlots(html);
-    const targets = loadTargets();
+    const [html, targets] = await Promise.all([
+      loginAndGetHtml(),
+      loadTargetsFromDiscord(),
+    ]);
+    const slots = parseSlots(html);
 
-    // 監視対象コマだけ絞り込む
     const notifySlots = targets.length === 0
       ? slots
       : slots.filter(s => targets.some(t => t.date === s.date && t.time === s.time));
 
     const notifyKey = notifySlots.map(s => `${s.date}|${s.time}`).sort().join("|");
 
-    console.log(`[${now}] 全体の空き: ${slots.length}件 / 指定コマ: ${notifySlots.length}件`);
+    console.log(`[${now}] 監視コマ: ${targets.length}件 / 空き: ${notifySlots.length}件`);
+    if (targets.length === 0) console.log("  ※ 予約設定チャンネルにコマを投稿してください");
 
-    // ── Discordへのステータス投稿（毎回）──
-    let statusMsg = `🕐 **${now} チェック完了**\n`;
-    if (notifySlots.length > 0) {
-      statusMsg += `✅ **指定コマに空きあり！**\n`;
-      notifySlots.forEach(s => { statusMsg += `　${s.date}${s.week} ${s.time}\n`; });
-    } else if (targets.length > 0) {
-      statusMsg += `❌ 指定コマはまだ空き無し\n`;
-      targets.forEach(t => { statusMsg += `　${t.date} ${t.time}\n`; });
-    } else {
-      statusMsg += slots.length > 0
-        ? `✅ ${slots.length}件の空きあり\n` + slots.map(s => `　${s.date}${s.week} ${s.time}`).join("\n")
-        : `❌ 空き無し`;
-    }
-    await sendDiscord(statusMsg);
-
-    // ── 指定コマが新たに空いたら追加で大きく通知 ──
+    // 空きが新たに出たときだけ通知（毎回は通知しない）
     if (notifyKey !== prevNotifyKey && notifySlots.length > 0) {
-      let alertMsg = `@everyone\n🚨 **【三郷自動車教習所】指定コマの予約が取れます！**\n`;
-      notifySlots.forEach(s => { alertMsg += `　${s.date}${s.week} ${s.time}\n`; });
-      alertMsg += `\n急いで予約してください！\n${LOGIN_TOP}`;
-      await sendDiscord(alertMsg);
-      console.log("  → 緊急通知送信");
+      let msg = `@everyone\n🚨 **【三郷自動車教習所】指定コマの予約が取れます！**\n`;
+      notifySlots.forEach(s => { msg += `　${s.date}${s.week} ${s.time}\n`; });
+      msg += `\n急いで予約してください！\n${LOGIN_TOP}`;
+      await sendDiscord(msg);
+      console.log("  → 通知送信！");
+    } else if (notifyKey !== prevNotifyKey && prevNotifyKey !== null && notifySlots.length === 0) {
+      // 空きがなくなったときも一言
+      await sendDiscord(`✅ 指定コマの空きがなくなりました（${now}）`);
     }
 
     prevNotifyKey = notifyKey;
-
   } catch (err) {
     console.error(`[${now}] エラー: ${err.message}`);
     await sendDiscord(`⚠️ **監視エラー** (${now})\n${err.message}`).catch(() => {});
@@ -179,20 +175,12 @@ async function checkOnce() {
 }
 
 // ─── メイン ─────────────────────────────────────────────────────────────
-const initTargets = loadTargets();
 console.log("三郷自動車教習所 技能予約監視ツール 起動");
-if (initTargets.length > 0) {
-  console.log(`監視コマ: ${initTargets.map(t => `${t.date} ${t.time}`).join(" / ")}`);
-} else {
-  console.log("監視コマ: 全コマ");
-}
 console.log(RUN_ONCE ? "モード: 1回実行\n" : `モード: ${CONFIG.intervalMinutes}分ごと\n`);
 
 if (RUN_ONCE) {
-  // GitHub Actions用：1回実行して終了
   checkOnce().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
 } else {
-  // ローカル用：定期実行
   checkOnce();
   setInterval(checkOnce, CONFIG.intervalMinutes * 60 * 1000);
 }
