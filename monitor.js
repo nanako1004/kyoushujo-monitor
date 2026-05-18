@@ -126,6 +126,7 @@ async function loadTargetsFromDiscord() {
   if (!msg) return { targets: [], msgId: null, isNew: false };
 
   const targets = msg.content
+    .replace(/```[^\n]*/g, "")  // コードブロックの ``` を除去
     .split("\n")
     .map(l => l.replace(/#.*$/, "").trim())
     .filter(l => /^\d+\/\d+\s+\d+:\d+$/.test(l))
@@ -181,7 +182,7 @@ async function checkOnce() {
           `✅ **監視コマを更新しました！**（以前の設定はリセット）\n${list}\n\n空きが出たら通知します。複数コマを監視したい場合は1つのメッセージにまとめて送ってください。`);
       } else {
         await botSend(CONFIG.discordTargetChannel,
-          `⚠️ コマの形式が正しくありません。\n1つのメッセージにまとめて送ってください↓\n\`\`\`\n5/19 10:10\n5/23 14:00\n5/23 15:00\n\`\`\``);
+          `⚠️ コマの形式が正しくありません。\n「月/日 時間」の形式で1行1コマ、1つのメッセージで送ってください。\n\n例）\n5/19 10:10\n5/23 14:00\n5/23 15:00`);
       }
       prevConfirmedMsgId = msgId;
     }
