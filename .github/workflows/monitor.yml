@@ -2,7 +2,7 @@ name: 教習所 技能予約監視
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # 5分ごとに実行
+    - cron: '* * * * *'   # 1分ごとに実行
   workflow_dispatch:          # GitHubの画面から手動実行もできる
 
 jobs:
