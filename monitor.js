@@ -95,6 +95,18 @@ function parseSlots(html) {
   return slots;
 }
 
+// ─── ボットがチャンネルにメッセージを送る ─────────────────────────────
+async function botSend(channelId, content) {
+  await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+    method:  "POST",
+    headers: {
+      Authorization:  `Bot ${CONFIG.discordBotToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ content }),
+  });
+}
+
 // ─── Discordの「予約設定」チャンネルから監視コマを読み取る ────────────
 // チャンネルの最新メッセージを読んでパースする
 // 書き方例（チャンネルに投稿するメッセージ）：
@@ -111,9 +123,9 @@ async function loadTargetsFromDiscord() {
 
   // ボット以外の一番最新のメッセージを使う
   const msg = messages.find(m => !m.author?.bot);
-  if (!msg) return [];
+  if (!msg) return { targets: [], msgId: null, isNew: false };
 
-  return msg.content
+  const targets = msg.content
     .split("\n")
     .map(l => l.replace(/#.*$/, "").trim())
     .filter(l => /^\d+\/\d+\s+\d+:\d+$/.test(l))
@@ -122,6 +134,12 @@ async function loadTargetsFromDiscord() {
       const [mo, d] = datePart.split("/");
       return { date: `${parseInt(mo)}月${parseInt(d)}日`, time };
     });
+
+  // メッセージが10分以内なら「新着」と判定して確認メッセージを送る
+  const ageMs = Date.now() - new Date(msg.timestamp).getTime();
+  const isNew = ageMs < 10 * 60 * 1000;
+
+  return { targets, msgId: msg.id, isNew };
 }
 
 // ─── Discord 通知（Webhook経由）────────────────────────────────────────
@@ -135,12 +153,13 @@ async function sendDiscord(message) {
 }
 
 // ─── 1回分のチェック ────────────────────────────────────────────────────
-let prevNotifyKey = null;
+let prevNotifyKey      = null;
+let prevConfirmedMsgId = null;
 
 async function checkOnce() {
   const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
   try {
-    const [html, targets] = await Promise.all([
+    const [html, { targets, msgId, isNew }] = await Promise.all([
       loginAndGetHtml(),
       loadTargetsFromDiscord(),
     ]);
@@ -153,6 +172,20 @@ async function checkOnce() {
     const notifyKey = notifySlots.map(s => `${s.date}|${s.time}`).sort().join("|");
 
     console.log(`[${now}] 監視コマ: ${targets.length}件 / 空き: ${notifySlots.length}件`);
+
+    // 新しいメッセージを検出したら #予約設定 に確認を返す
+    if (isNew && msgId !== prevConfirmedMsgId) {
+      if (targets.length > 0) {
+        const list = targets.map(t => `　${t.date} ${t.time}`).join("\n");
+        await botSend(CONFIG.discordTargetChannel,
+          `✅ **監視コマを受け取りました！**\n${list}\n\n空きが出たら通知します。`);
+      } else {
+        await botSend(CONFIG.discordTargetChannel,
+          `⚠️ コマの形式が正しくありません。\n例：\n\`\`\`\n5/19 10:10\n5/23 14:00\n\`\`\``);
+      }
+      prevConfirmedMsgId = msgId;
+    }
+
     if (targets.length === 0) console.log("  ※ 予約設定チャンネルにコマを投稿してください");
 
     // 空きが新たに出たときだけ通知（毎回は通知しない）
