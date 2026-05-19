@@ -135,13 +135,27 @@ async function loadTargetsFromDiscord() {
   if (!res.ok) throw new Error(`Discord API エラー: ${res.status}`);
   const messages = await res.json();
 
-  // ボット以外の最新メッセージを探す
-  const msg = messages.find(m => !m.author?.bot);
-  if (!msg) return { targets: [], msgId: null, isNew: false };
+  const userMsgs = messages.filter(m => !m.author?.bot);
+  if (!userMsgs.length) return { targets: [], msgId: null, isNew: false };
 
-  const content = msg.content.trim();
-  const ageMs   = Date.now() - new Date(msg.timestamp).getTime();
-  const isNew   = ageMs < 10 * 60 * 1000;
+  // /help・/list は一番最近のメッセージを見る
+  const latest  = userMsgs[0];
+  const latestContent = latest.content.trim();
+  const latestAgeMs   = Date.now() - new Date(latest.timestamp).getTime();
+  const latestIsNew   = latestAgeMs < 10 * 60 * 1000;
+
+  // ターゲット設定は一番最近の /set コマンドを探す（/list や /help で上書きされない）
+  const setMsg = userMsgs.find(m => {
+    const c = m.content.trim();
+    const lower = c.toLowerCase();
+    if (lower.startsWith("/set")) return parseSlotText(c.replace(/^\/set\s*/i, "")).length > 0;
+    return /^\d+\/\d+/.test(c);
+  });
+
+  const msg     = latestContent === "/help" || latestContent === "/list" ? latest : (setMsg ?? latest);
+  const content = latestContent === "/help" || latestContent === "/list" ? latestContent : (setMsg?.content ?? latestContent).trim();
+  const ageMs   = Date.now() - new Date((setMsg ?? latest).timestamp).getTime();
+  const isNew   = latestIsNew && latest.id !== prevConfirmedMsgId;
 
   // /help コマンド
   if (content === "/help") {
