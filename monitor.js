@@ -166,9 +166,12 @@ async function checkOnce() {
     ]);
     const slots = parseSlots(html);
 
-    const notifySlots = targets.length === 0
-      ? slots
-      : slots.filter(s => targets.some(t => t.date === s.date && t.time === s.time));
+    // targets未設定の場合は通知しない（全件通知しない）
+    if (targets.length === 0) {
+      console.log("  ※ 予約設定チャンネルにコマが設定されていません");
+      return;
+    }
+    const notifySlots = slots.filter(s => targets.some(t => t.date === s.date && t.time === s.time));
 
     const notifyKey = notifySlots.map(s => `${s.date}|${s.time}`).sort().join("|");
 
