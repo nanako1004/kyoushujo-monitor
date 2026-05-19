@@ -113,32 +113,77 @@ async function botSend(channelId, content) {
 //   5/19 10:10
 //   5/23 14:00
 //   5/23 15:00
-async function loadTargetsFromDiscord() {
-  const res = await fetch(
-    `https://discord.com/api/v10/channels/${CONFIG.discordTargetChannel}/messages?limit=5`,
-    { headers: { Authorization: `Bot ${CONFIG.discordBotToken}` } }
-  );
-  if (!res.ok) throw new Error(`Discord API エラー: ${res.status}`);
-  const messages = await res.json();
-
-  // ボット以外の一番最新のメッセージを使う
-  const msg = messages.find(m => !m.author?.bot);
-  if (!msg) return { targets: [], msgId: null, isNew: false };
-
-  const targets = msg.content
-    .replace(/```[^\n]*/g, "")  // コードブロックの ``` を除去
-    .split("\n")
-    .map(l => l.replace(/#.*$/, "").trim())
+// 「5/19 10:10」形式の文字列を { date, time } に変換
+function parseSlotText(text) {
+  const clean = text.replace(/```[^\n]*/g, "").trim();
+  // カンマ区切りまたは改行区切りで分割
+  return clean.split(/[,\n]/)
+    .map(l => l.trim())
     .filter(l => /^\d+\/\d+\s+\d+:\d+$/.test(l))
     .map(l => {
       const [datePart, time] = l.split(/\s+/);
       const [mo, d] = datePart.split("/");
       return { date: `${parseInt(mo)}月${parseInt(d)}日`, time };
     });
+}
 
-  // メッセージが10分以内なら「新着」と判定して確認メッセージを送る
-  const ageMs = Date.now() - new Date(msg.timestamp).getTime();
-  const isNew = ageMs < 10 * 60 * 1000;
+async function loadTargetsFromDiscord() {
+  const res = await fetch(
+    `https://discord.com/api/v10/channels/${CONFIG.discordTargetChannel}/messages?limit=10`,
+    { headers: { Authorization: `Bot ${CONFIG.discordBotToken}` } }
+  );
+  if (!res.ok) throw new Error(`Discord API エラー: ${res.status}`);
+  const messages = await res.json();
+
+  // ボット以外の最新メッセージを探す
+  const msg = messages.find(m => !m.author?.bot);
+  if (!msg) return { targets: [], msgId: null, isNew: false };
+
+  const content = msg.content.trim();
+  const ageMs   = Date.now() - new Date(msg.timestamp).getTime();
+  const isNew   = ageMs < 10 * 60 * 1000;
+
+  // /help コマンド
+  if (content === "/help") {
+    if (isNew && msg.id !== prevConfirmedMsgId) {
+      await botSend(CONFIG.discordTargetChannel,
+        `📖 **使い方**\n\n` +
+        `**コマ設定：**\n\`/set 5/19 10:10, 5/23 14:00\`\n（カンマ区切りで複数指定OK）\n\n` +
+        `**現在の設定確認：**\n\`/list\`\n\n` +
+        `**設定変更はいつでもOK**\n新しい /set を送ると前の設定はリセットされます。`
+      );
+      prevConfirmedMsgId = msg.id;
+    }
+    return { targets: [], msgId: msg.id, isNew: false };
+  }
+
+  // /list コマンド（現在の監視コマを表示）
+  if (content === "/list") {
+    if (isNew && msg.id !== prevConfirmedMsgId) {
+      // 直近の /set を探して表示
+      const setMsg = messages.find(m => !m.author?.bot && m.content.startsWith("/set"));
+      if (setMsg) {
+        const t = parseSlotText(setMsg.content.replace(/^\/set\s*/i, ""));
+        const list = t.length > 0
+          ? t.map(s => `　${s.date} ${s.time}`).join("\n")
+          : "（設定なし）";
+        await botSend(CONFIG.discordTargetChannel, `📋 **現在の監視コマ：**\n${list}`);
+      } else {
+        await botSend(CONFIG.discordTargetChannel, `📋 まだコマが設定されていません。\n\`/set 5/19 10:10\` のように送ってください。`);
+      }
+      prevConfirmedMsgId = msg.id;
+    }
+    return { targets: [], msgId: msg.id, isNew: false };
+  }
+
+  // /set コマンド
+  let targets = [];
+  if (content.toLowerCase().startsWith("/set")) {
+    targets = parseSlotText(content.replace(/^\/set\s*/i, ""));
+  } else {
+    // 後方互換：昔の形式（/setなしの日付直書き）も引き続きサポート
+    targets = parseSlotText(content);
+  }
 
   return { targets, msgId: msg.id, isNew };
 }
@@ -182,10 +227,10 @@ async function checkOnce() {
       if (targets.length > 0) {
         const list = targets.map(t => `　${t.date} ${t.time}`).join("\n");
         await botSend(CONFIG.discordTargetChannel,
-          `✅ **監視コマを更新しました！**（以前の設定はリセット）\n${list}\n\n空きが出たら通知します。複数コマを監視したい場合は1つのメッセージにまとめて送ってください。`);
+          `✅ **監視コマを更新しました！**\n${list}\n\n空きが出たら通知します。`);
       } else {
         await botSend(CONFIG.discordTargetChannel,
-          `⚠️ コマの形式が正しくありません。\n「月/日 時間」の形式で1行1コマ、1つのメッセージで送ってください。\n\n例）\n5/19 10:10\n5/23 14:00\n5/23 15:00`);
+          `⚠️ コマが認識できませんでした。\n\n使い方：\n\`/set 5/19 10:10, 5/23 14:00, 5/23 15:00\`\n\nわからなければ \`/help\` と送ってください。`);
       }
       prevConfirmedMsgId = msgId;
     }
