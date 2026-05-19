@@ -129,77 +129,82 @@ function parseSlotText(text) {
 
 async function loadTargetsFromDiscord() {
   const res = await fetch(
-    `https://discord.com/api/v10/channels/${CONFIG.discordTargetChannel}/messages?limit=10`,
+    `https://discord.com/api/v10/channels/${CONFIG.discordTargetChannel}/messages?limit=20`,
     { headers: { Authorization: `Bot ${CONFIG.discordBotToken}` } }
   );
   if (!res.ok) throw new Error(`Discord API エラー: ${res.status}`);
   const messages = await res.json();
+  // messages は新しい順（index 0 が最新）
 
   const userMsgs = messages.filter(m => !m.author?.bot);
-  if (!userMsgs.length) return { targets: [], msgId: null, isNew: false };
+  if (!userMsgs.length) return { targets: [] };
 
-  // /help・/list は一番最近のメッセージを見る
-  const latest  = userMsgs[0];
+  // 指定メッセージより後（新しい）にボットが返信済みか判定
+  function botRepliedAfter(userMsg, mustInclude = null) {
+    return messages.some(m => {
+      if (!m.author?.bot) return false;
+      if (BigInt(m.id) <= BigInt(userMsg.id)) return false;
+      return mustInclude ? m.content.includes(mustInclude) : true;
+    });
+  }
+
+  const latest = userMsgs[0];
   const latestContent = latest.content.trim();
-  const latestAgeMs   = Date.now() - new Date(latest.timestamp).getTime();
-  const latestIsNew   = latestAgeMs < 10 * 60 * 1000;
-
-  // ターゲット設定は一番最近の /set コマンドを探す（/list や /help で上書きされない）
-  const setMsg = userMsgs.find(m => {
-    const c = m.content.trim();
-    const lower = c.toLowerCase();
-    if (lower.startsWith("/set")) return parseSlotText(c.replace(/^\/set\s*/i, "")).length > 0;
-    return /^\d+\/\d+/.test(c);
-  });
-
-  const msg     = latestContent === "/help" || latestContent === "/list" ? latest : (setMsg ?? latest);
-  const content = latestContent === "/help" || latestContent === "/list" ? latestContent : (setMsg?.content ?? latestContent).trim();
-  const ageMs   = Date.now() - new Date((setMsg ?? latest).timestamp).getTime();
-  const isNew   = latestIsNew && latest.id !== prevConfirmedMsgId;
 
   // /help コマンド
-  if (content === "/help") {
-    if (isNew && msg.id !== prevConfirmedMsgId) {
+  if (latestContent === "/help") {
+    if (!botRepliedAfter(latest)) {
       await botSend(CONFIG.discordTargetChannel,
         `📖 **使い方**\n\n` +
         `**コマ設定：**\n\`/set 5/19 10:10, 5/23 14:00\`\n（カンマ区切りで複数指定OK）\n\n` +
         `**現在の設定確認：**\n\`/list\`\n\n` +
         `**設定変更はいつでもOK**\n新しい /set を送ると前の設定はリセットされます。`
       );
-      prevConfirmedMsgId = msg.id;
     }
-    return { targets: [], msgId: msg.id, isNew: false };
+    return { targets: [] };
   }
 
-  // /list コマンド（現在の監視コマを表示）
-  if (content === "/list") {
-    if (isNew && msg.id !== prevConfirmedMsgId) {
-      // 直近の /set を探して表示
-      const setMsg = messages.find(m => !m.author?.bot && m.content.startsWith("/set"));
+  // /list コマンド
+  if (latestContent === "/list") {
+    if (!botRepliedAfter(latest)) {
+      const setMsg = userMsgs.find(m => {
+        const c = m.content.trim();
+        if (c.toLowerCase().startsWith("/set")) return parseSlotText(c.replace(/^\/set\s*/i, "")).length > 0;
+        return /^\d+\/\d+/.test(c);
+      });
       if (setMsg) {
-        const t = parseSlotText(setMsg.content.replace(/^\/set\s*/i, ""));
-        const list = t.length > 0
-          ? t.map(s => `　${s.date} ${s.time}`).join("\n")
-          : "（設定なし）";
+        const t = parseSlotText(setMsg.content.trim().replace(/^\/set\s*/i, ""));
+        const list = t.map(s => `　${s.date} ${s.time}`).join("\n");
         await botSend(CONFIG.discordTargetChannel, `📋 **現在の監視コマ：**\n${list}`);
       } else {
         await botSend(CONFIG.discordTargetChannel, `📋 まだコマが設定されていません。\n\`/set 5/19 10:10\` のように送ってください。`);
       }
-      prevConfirmedMsgId = msg.id;
     }
-    return { targets: [], msgId: msg.id, isNew: false };
+    return { targets: [] };
   }
 
-  // /set コマンド
-  let targets = [];
-  if (content.toLowerCase().startsWith("/set")) {
-    targets = parseSlotText(content.replace(/^\/set\s*/i, ""));
-  } else {
-    // 後方互換：昔の形式（/setなしの日付直書き）も引き続きサポート
-    targets = parseSlotText(content);
+  // 最新の有効な /set を探す（空の /set は除外）
+  const setMsg = userMsgs.find(m => {
+    const c = m.content.trim();
+    if (c.toLowerCase().startsWith("/set")) return parseSlotText(c.replace(/^\/set\s*/i, "")).length > 0;
+    return /^\d+\/\d+/.test(c);
+  });
+  if (!setMsg) return { targets: [] };
+
+  const setContent = setMsg.content.trim();
+  const targets = setContent.toLowerCase().startsWith("/set")
+    ? parseSlotText(setContent.replace(/^\/set\s*/i, ""))
+    : parseSlotText(setContent);
+
+  // ボットがこの /set にまだ確認返信していなければ送る
+  if (!botRepliedAfter(setMsg, "監視コマを更新しました")) {
+    const list = targets.map(t => `　${t.date} ${t.time}`).join("\n");
+    await botSend(CONFIG.discordTargetChannel,
+      `✅ **監視コマを更新しました！**\n${list}\n\n空きが出たら通知します。`
+    );
   }
 
-  return { targets, msgId: msg.id, isNew };
+  return { targets };
 }
 
 // ─── Discord 通知（Webhook経由）────────────────────────────────────────
@@ -213,45 +218,26 @@ async function sendDiscord(message) {
 }
 
 // ─── 1回分のチェック ────────────────────────────────────────────────────
-let prevNotifyKey      = null;
-let prevConfirmedMsgId = null;
+let prevNotifyKey = null;
 
 async function checkOnce() {
   const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
   try {
-    const [html, { targets, msgId, isNew }] = await Promise.all([
+    const [html, { targets }] = await Promise.all([
       loginAndGetHtml(),
       loadTargetsFromDiscord(),
     ]);
     const slots = parseSlots(html);
 
-    // targets未設定の場合は通知しない（全件通知しない）
     if (targets.length === 0) {
       console.log("  ※ 予約設定チャンネルにコマが設定されていません");
       return;
     }
     const notifySlots = slots.filter(s => targets.some(t => t.date === s.date && t.time === s.time));
-
     const notifyKey = notifySlots.map(s => `${s.date}|${s.time}`).sort().join("|");
 
     console.log(`[${now}] 監視コマ: ${targets.length}件 / 空き: ${notifySlots.length}件`);
 
-    // 新しいメッセージを検出したら #予約設定 に確認を返す
-    if (isNew && msgId !== prevConfirmedMsgId) {
-      if (targets.length > 0) {
-        const list = targets.map(t => `　${t.date} ${t.time}`).join("\n");
-        await botSend(CONFIG.discordTargetChannel,
-          `✅ **監視コマを更新しました！**\n${list}\n\n空きが出たら通知します。`);
-      } else {
-        await botSend(CONFIG.discordTargetChannel,
-          `⚠️ コマが認識できませんでした。\n\n使い方：\n\`/set 5/19 10:10, 5/23 14:00, 5/23 15:00\`\n\nわからなければ \`/help\` と送ってください。`);
-      }
-      prevConfirmedMsgId = msgId;
-    }
-
-    if (targets.length === 0) console.log("  ※ 予約設定チャンネルにコマを投稿してください");
-
-    // 空きが新たに出たときだけ通知（毎回は通知しない）
     if (notifyKey !== prevNotifyKey && notifySlots.length > 0) {
       let msg = `@everyone\n🚨 **【三郷自動車教習所】指定コマの予約が取れます！**\n`;
       notifySlots.forEach(s => { msg += `　${s.date}${s.week} ${s.time}\n`; });
@@ -259,7 +245,6 @@ async function checkOnce() {
       await sendDiscord(msg);
       console.log("  → 通知送信！");
     } else if (notifyKey !== prevNotifyKey && prevNotifyKey !== null && notifySlots.length === 0) {
-      // 空きがなくなったときも一言
       await sendDiscord(`✅ 指定コマの空きがなくなりました（${now}）`);
     }
 
