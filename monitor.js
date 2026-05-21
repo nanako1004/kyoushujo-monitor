@@ -97,7 +97,7 @@ function parseSlots(html) {
 
 // ─── ボットがチャンネルにメッセージを送る ─────────────────────────────
 async function botSend(channelId, content) {
-  await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+  const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
     method:  "POST",
     headers: {
       Authorization:  `Bot ${CONFIG.discordBotToken}`,
@@ -105,6 +105,12 @@ async function botSend(channelId, content) {
     },
     body: JSON.stringify({ content }),
   });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error(`botSend失敗: ${res.status} ${body}`);
+  } else {
+    console.log(`botSend OK: ${res.status}`);
+  }
 }
 
 // ─── Discordの「予約設定」チャンネルから監視コマを読み取る ────────────
